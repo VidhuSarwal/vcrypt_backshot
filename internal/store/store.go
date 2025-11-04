@@ -116,3 +116,134 @@ func ListUserDriveAccounts(ctx context.Context, userID primitive.ObjectID) ([]mo
 	}
 	return u.DriveAccounts, nil
 }
+
+func GetDriveAccountByID(ctx context.Context, accountID primitive.ObjectID) (*models.DriveAccount, error) {
+	var u models.User
+	err := usersCol.FindOne(ctx, bson.M{"drive_accounts._id": accountID}).Decode(&u)
+	if err != nil {
+		return nil, err
+	}
+	for _, acc := range u.DriveAccounts {
+		if acc.ID == accountID {
+			return &acc, nil
+		}
+	}
+	return nil, errors.New("account not found")
+}
+
+// Upload Session Management
+var sessionsCol *mongo.Collection
+
+func initSessionsCollection(ctx context.Context) {
+	sessionsCol = db.Collection("upload_sessions")
+	// Create TTL index for session expiry
+	_, _ = sessionsCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.M{"expires_at": 1},
+		Options: options.Index().SetExpireAfterSeconds(0),
+	})
+}
+
+func CreateUploadSession(ctx context.Context, session *models.UploadSession) error {
+	if sessionsCol == nil {
+		return errors.New("sessions collection not initialized")
+	}
+	_, err := sessionsCol.InsertOne(ctx, session)
+	return err
+}
+
+func GetUploadSession(ctx context.Context, sessionID primitive.ObjectID) (*models.UploadSession, error) {
+	if sessionsCol == nil {
+		return nil, errors.New("sessions collection not initialized")
+	}
+	var session models.UploadSession
+	err := sessionsCol.FindOne(ctx, bson.M{"_id": sessionID}).Decode(&session)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &session, nil
+}
+
+func UpdateSessionUploadProgress(ctx context.Context, sessionID primitive.ObjectID, uploadedSize int64) error {
+	if sessionsCol == nil {
+		return errors.New("sessions collection not initialized")
+	}
+	_, err := sessionsCol.UpdateOne(ctx,
+		bson.M{"_id": sessionID},
+		bson.M{"$set": bson.M{"uploaded_size": uploadedSize}},
+	)
+	return err
+}
+
+func UpdateSessionStatus(ctx context.Context, sessionID primitive.ObjectID, status string, progress float64, errorMsg string) error {
+	if sessionsCol == nil {
+		return errors.New("sessions collection not initialized")
+	}
+	update := bson.M{
+		"status":              status,
+		"processing_progress": progress,
+	}
+	if errorMsg != "" {
+		update["error_message"] = errorMsg
+	}
+	_, err := sessionsCol.UpdateOne(ctx,
+		bson.M{"_id": sessionID},
+		bson.M{"$set": update},
+	)
+	return err
+}
+
+func CompleteSession(ctx context.Context, sessionID primitive.ObjectID, completedAt *time.Time) error {
+	if sessionsCol == nil {
+		return errors.New("sessions collection not initialized")
+	}
+	_, err := sessionsCol.UpdateOne(ctx,
+		bson.M{"_id": sessionID},
+		bson.M{"$set": bson.M{
+			"status":       "complete",
+			"completed_at": completedAt,
+		}},
+	)
+	return err
+}
+
+func CountActiveUserSessions(ctx context.Context, userID primitive.ObjectID) (int, error) {
+	if sessionsCol == nil {
+		return 0, errors.New("sessions collection not initialized")
+	}
+	count, err := sessionsCol.CountDocuments(ctx, bson.M{
+		"user_id": userID,
+		"status":  bson.M{"$in": []string{"uploading", "processing"}},
+	})
+	return int(count), err
+}
+
+func GetExpiredSessions(ctx context.Context) ([]*models.UploadSession, error) {
+	if sessionsCol == nil {
+		return nil, errors.New("sessions collection not initialized")
+	}
+	cursor, err := sessionsCol.Find(ctx, bson.M{
+		"expires_at": bson.M{"$lt": time.Now()},
+		"status":     bson.M{"$in": []string{"uploading", "processing"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var sessions []*models.UploadSession
+	if err := cursor.All(ctx, &sessions); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
+func DeleteUploadSession(ctx context.Context, sessionID primitive.ObjectID) error {
+	if sessionsCol == nil {
+		return errors.New("sessions collection not initialized")
+	}
+	_, err := sessionsCol.DeleteOne(ctx, bson.M{"_id": sessionID})
+	return err
+}
