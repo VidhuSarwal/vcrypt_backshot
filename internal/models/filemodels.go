@@ -36,6 +36,8 @@ const (
 type DriveSpaceInfo struct {
 	AccountID   primitive.ObjectID `json:"account_id"`
 	DisplayName string             `json:"display_name"`
+	OwnerName   string             `json:"owner_name,omitempty"`
+	OwnerEmail  string             `json:"owner_email,omitempty"`
 	TotalSpace  int64              `json:"total_space"` // bytes
 	UsedSpace   int64              `json:"used_space"`  // bytes
 	FreeSpace   int64              `json:"free_space"`  // bytes

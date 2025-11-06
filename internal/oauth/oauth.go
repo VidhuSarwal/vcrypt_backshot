@@ -3,6 +3,7 @@ package oauth
 import (
 	"SE/internal/models"
 	"SE/internal/store"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -44,7 +45,10 @@ func InitOAuthConfig() {
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		Endpoint:     google.Endpoint,
 		Scopes: []string{
+			// drive.file allows upload/manage files created by the app
 			"https://www.googleapis.com/auth/drive.file",
+			// metadata.readonly is required to call about.get for storageQuota
+			"https://www.googleapis.com/auth/drive.metadata.readonly",
 			"https://www.googleapis.com/auth/userinfo.email",
 		},
 		RedirectURL: baseURL + "/oauth2/callback",
@@ -82,7 +86,8 @@ func DriveLinkHandler(w http.ResponseWriter, r *http.Request) {
 	url := oauthConf.AuthCodeURL(
 		state,
 		oauth2.AccessTypeOffline,
-		oauth2.ApprovalForce,
+		// Ensure Google shows consent screen so we receive a refresh_token
+		oauth2.SetAuthURLParam("prompt", "consent"),
 	)
 
 	log.Printf("Generated OAuth URL for user %s: %s", uid.Hex(), url)
@@ -241,4 +246,11 @@ func maskString(s string) string {
 		return "****"
 	}
 	return s[:4] + "****" + s[len(s)-4:]
+}
+
+// NewClient returns an *http.Client that automatically refreshes the Google OAuth2 token
+// using the refresh_token as needed. Use this instead of oauth2.StaticTokenSource so
+// requests keep working after access tokens expire.
+func NewClient(ctx context.Context, tok *oauth2.Token) *http.Client {
+	return oauthConf.Client(ctx, tok)
 }

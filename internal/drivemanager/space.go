@@ -58,6 +58,8 @@ func GetUserDriveSpaces(ctx context.Context, userID primitive.ObjectID) ([]model
 			continue
 		}
 
+		spaceInfo.OwnerName = space.OwnerName
+		spaceInfo.OwnerEmail = space.OwnerEmail
 		spaceInfo.TotalSpace = space.Limit
 		spaceInfo.UsedSpace = space.Usage
 		spaceInfo.FreeSpace = space.Limit - space.Usage
@@ -70,6 +72,10 @@ func GetUserDriveSpaces(ctx context.Context, userID primitive.ObjectID) ([]model
 }
 
 type driveAboutResponse struct {
+	User struct {
+		DisplayName  string `json:"displayName"`
+		EmailAddress string `json:"emailAddress"`
+	} `json:"user"`
 	StorageQuota struct {
 		Limit int64 `json:"limit,string"`
 		Usage int64 `json:"usage,string"`
@@ -77,12 +83,12 @@ type driveAboutResponse struct {
 }
 
 // queryDriveSpace calls Google Drive API to get storage info
-func queryDriveSpace(token *oauth2.Token) (*struct{ Limit, Usage int64 }, error) {
-	// Create HTTP client with OAuth2 token
-	client := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(token))
+func queryDriveSpace(token *oauth2.Token) (*struct{ Limit, Usage int64; OwnerName, OwnerEmail string }, error) {
+	// Create HTTP client with OAuth2 token (auto-refreshes using refresh_token)
+	client := oauth.NewClient(context.Background(), token)
 
 	// Call Drive API
-	resp, err := client.Get("https://www.googleapis.com/drive/v3/about?fields=storageQuota")
+	resp, err := client.Get("https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress),storageQuota")
 	if err != nil {
 		return nil, fmt.Errorf("drive API call failed: %w", err)
 	}
@@ -97,8 +103,10 @@ func queryDriveSpace(token *oauth2.Token) (*struct{ Limit, Usage int64 }, error)
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return &struct{ Limit, Usage int64 }{
+	return &struct{ Limit, Usage int64; OwnerName, OwnerEmail string }{
 		Limit: about.StorageQuota.Limit,
 		Usage: about.StorageQuota.Usage,
+		OwnerName: about.User.DisplayName,
+		OwnerEmail: about.User.EmailAddress,
 	}, nil
 }

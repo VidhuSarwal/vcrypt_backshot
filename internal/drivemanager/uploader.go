@@ -97,8 +97,8 @@ func uploadFileToDrive(token *oauth2.Token, filePath, filename string) (string, 
 
 	writer.Close()
 
-	// Create HTTP client with OAuth2 token
-	client := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(token))
+	// Create HTTP client with OAuth2 token (auto-refreshes using refresh_token)
+	client := oauth.NewClient(context.Background(), token)
 
 	// Upload using multipart upload
 	uploadURL := "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
@@ -198,8 +198,8 @@ func DeleteDriveFile(ctx context.Context, accountID primitive.ObjectID, fileID s
 		return err
 	}
 
-	// Create HTTP client
-	client := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&token))
+	// Create HTTP client (auto-refreshes using refresh_token)
+	client := oauth.NewClient(context.Background(), &token)
 
 	// Delete file
 	deleteURL := fmt.Sprintf("https://www.googleapis.com/drive/v3/files/%s", fileID)
