@@ -239,6 +239,63 @@ else
     exit 1
 fi
 
+#!/bin/bash
+
+# Add after Test 8 (Calculate chunking strategy)
+print_header "Test 8.5: Chunk Distribution Analysis"
+
+# Parse and display chunk distribution
+CHUNK_DISTRIBUTION=$(echo "$CHUNKING_RESPONSE" | jq -r '
+  .plan | group_by(.drive_account_id) |
+  map({
+    drive: .[0].drive_account_id,
+    chunks: length,
+    total_size: (map(.size) | add),
+    chunk_ids: (map(.chunk_id) | sort)
+  })
+')
+
+echo "$CHUNK_DISTRIBUTION" | jq -r --arg total "$TEST_FILE_SIZE" '
+  .[] |
+  "  Drive: \(.drive)\n" +
+  "    Chunks: \(.chunks)\n" +
+  "    Size: \(.total_size) bytes (\((.total_size / ($total | tonumber) * 100 * 100 | round / 100))%)\n" +
+  "    Chunk IDs: \(.chunk_ids | join(", "))\n"
+'
+
+# Calculate per-drive statistics
+DRIVE_STATS=$(echo "$CHUNKING_RESPONSE" | jq -r --arg total "$TEST_FILE_SIZE" '
+  .plan | group_by(.drive_account_id) |
+  map({
+    drive_id: .[0].drive_account_id,
+    num_chunks: length,
+    total_bytes: (map(.size) | add),
+    percentage: ((map(.size) | add) / ($total | tonumber) * 100)
+  })
+')
+
+print_success "Chunk distribution calculated"
+echo ""
+
+# Store for final summary
+CHUNK_DIST_SUMMARY=$(echo "$DRIVE_STATS" | jq -r '.[] | "  • \(.num_chunks) chunk(s) → Drive \(.drive_id | .[0:12])... (\(.percentage | tonumber | floor)%)"')
+
+# Update final summary section
+# Replace the existing summary with:
+echo ""
+print_header "Test Summary"
+print_success "All tests completed successfully!"
+echo ""
+print_info "User: $RANDOM_EMAIL"
+print_info "Drive Accounts Added: $ACCOUNTS_ADDED"
+print_info "Session ID: $SESSION_ID"
+print_info "Test file size: $(numfmt --to=iec-i --suffix=B $TEST_FILE_SIZE)"
+print_info "Total chunks created: $NUM_FILE_CHUNKS"
+echo ""
+print_info "Chunk Distribution:"
+echo "$CHUNK_DIST_SUMMARY"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 # Test 10: Monitor processing status (improved with timeout and better progress tracking)
 print_header "Test 10: Monitoring processing status"
 
