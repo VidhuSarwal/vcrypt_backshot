@@ -6,11 +6,13 @@ import (
 	"SE/internal/store"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -60,22 +62,34 @@ func uploadFileToDrive(token *oauth2.Token, filePath, filename string) (string, 
 	}
 	defer file.Close()
 
-	_, err = file.Stat()
+	fileStat, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
 
-	// Create multipart request
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	// Create HTTP client with OAuth2 token that auto-refreshes
+	ctx := context.Background()
+	client := oauth.NewClient(ctx, token)
 
-	// Add metadata
+	// Create metadata
 	metadata := map[string]interface{}{
 		"name": filename,
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
-	metadataPart, err := writer.CreatePart(map[string][]string{
+	// Use simple upload for files < 5MB, resumable for larger
+	if fileStat.Size() < 5*1024*1024 {
+		return simpleUpload(client, metadataJSON, file, fileStat.Size())
+	}
+	return resumableUpload(client, metadataJSON, file, fileStat.Size())
+}
+
+func simpleUpload(client *http.Client, metadataJSON []byte, file *os.File, fileSize int64) (string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Add metadata part
+	metadataPart, err := writer.CreatePart(textproto.MIMEHeader{
 		"Content-Type": {"application/json; charset=UTF-8"},
 	})
 	if err != nil {
@@ -83,8 +97,8 @@ func uploadFileToDrive(token *oauth2.Token, filePath, filename string) (string, 
 	}
 	metadataPart.Write(metadataJSON)
 
-	// Add file content
-	filePart, err := writer.CreatePart(map[string][]string{
+	// Add file content part
+	filePart, err := writer.CreatePart(textproto.MIMEHeader{
 		"Content-Type": {"application/octet-stream"},
 	})
 	if err != nil {
@@ -97,10 +111,6 @@ func uploadFileToDrive(token *oauth2.Token, filePath, filename string) (string, 
 
 	writer.Close()
 
-	// Create HTTP client with OAuth2 token (auto-refreshes using refresh_token)
-	client := oauth.NewClient(context.Background(), token)
-
-	// Upload using multipart upload
 	uploadURL := "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
 	req, err := http.NewRequest("POST", uploadURL, body)
 	if err != nil {
@@ -123,6 +133,62 @@ func uploadFileToDrive(token *oauth2.Token, filePath, filename string) (string, 
 
 	var fileResp driveFileResponse
 	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
+		return "", err
+	}
+
+	return fileResp.ID, nil
+}
+
+func resumableUpload(client *http.Client, metadataJSON []byte, file *os.File, fileSize int64) (string, error) {
+	// Step 1: Initiate resumable upload
+	initiateURL := "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+	req, err := http.NewRequest("POST", initiateURL, bytes.NewReader(metadataJSON))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("X-Upload-Content-Type", "application/octet-stream")
+	req.Header.Set("X-Upload-Content-Length", fmt.Sprintf("%d", fileSize))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("resumable init failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	uploadURL := resp.Header.Get("Location")
+	if uploadURL == "" {
+		return "", fmt.Errorf("no upload URL returned")
+	}
+
+	// Step 2: Upload file content
+	file.Seek(0, 0) // Reset to beginning
+
+	uploadReq, err := http.NewRequest("PUT", uploadURL, file)
+	if err != nil {
+		return "", err
+	}
+	uploadReq.Header.Set("Content-Length", fmt.Sprintf("%d", fileSize))
+	uploadReq.ContentLength = fileSize
+
+	uploadResp, err := client.Do(uploadReq)
+	if err != nil {
+		return "", err
+	}
+	defer uploadResp.Body.Close()
+
+	if uploadResp.StatusCode != http.StatusOK && uploadResp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(uploadResp.Body)
+		return "", fmt.Errorf("upload failed: status %d: %s", uploadResp.StatusCode, string(respBody))
+	}
+
+	var fileResp driveFileResponse
+	if err := json.NewDecoder(uploadResp.Body).Decode(&fileResp); err != nil {
 		return "", err
 	}
 
@@ -198,8 +264,8 @@ func DeleteDriveFile(ctx context.Context, accountID primitive.ObjectID, fileID s
 		return err
 	}
 
-	// Create HTTP client (auto-refreshes using refresh_token)
-	client := oauth.NewClient(context.Background(), &token)
+	// Create HTTP client with auto-refresh
+	client := oauth.NewClient(ctx, &token)
 
 	// Delete file
 	deleteURL := fmt.Sprintf("https://www.googleapis.com/drive/v3/files/%s", fileID)
@@ -222,6 +288,16 @@ func DeleteDriveFile(ctx context.Context, accountID primitive.ObjectID, fileID s
 }
 
 func calculateFileChecksum(filePath string) (string, error) {
-	// Reuse the obfuscator's checksum function
-	return "", nil // Placeholder - use actual checksum calculation
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }

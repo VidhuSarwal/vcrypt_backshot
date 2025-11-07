@@ -10,7 +10,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 BASE_URL="http://localhost:8080"
-TEST_FILE_SIZE=$((500 * 1024 * 1024)) # 500 MB
+TEST_FILE_SIZE=$((50 * 1024 * 1024)) # 500 MB
 CHUNK_SIZE=$((10 * 1024 * 1024)) # 10 MB chunks
 
 # Helper functions

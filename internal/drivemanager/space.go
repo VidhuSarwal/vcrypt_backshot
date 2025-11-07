@@ -83,7 +83,10 @@ type driveAboutResponse struct {
 }
 
 // queryDriveSpace calls Google Drive API to get storage info
-func queryDriveSpace(token *oauth2.Token) (*struct{ Limit, Usage int64; OwnerName, OwnerEmail string }, error) {
+func queryDriveSpace(token *oauth2.Token) (*struct {
+	Limit, Usage          int64
+	OwnerName, OwnerEmail string
+}, error) {
 	// Create HTTP client with OAuth2 token (auto-refreshes using refresh_token)
 	client := oauth.NewClient(context.Background(), token)
 
@@ -103,10 +106,13 @@ func queryDriveSpace(token *oauth2.Token) (*struct{ Limit, Usage int64; OwnerNam
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return &struct{ Limit, Usage int64; OwnerName, OwnerEmail string }{
-		Limit: about.StorageQuota.Limit,
-		Usage: about.StorageQuota.Usage,
-		OwnerName: about.User.DisplayName,
+	return &struct {
+		Limit, Usage          int64
+		OwnerName, OwnerEmail string
+	}{
+		Limit:      about.StorageQuota.Limit,
+		Usage:      about.StorageQuota.Usage,
+		OwnerName:  about.User.DisplayName,
 		OwnerEmail: about.User.EmailAddress,
 	}, nil
 }

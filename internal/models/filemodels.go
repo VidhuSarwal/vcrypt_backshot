@@ -6,12 +6,13 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// UploadSession tracks an ongoing file upload, checks the status and progress.
+// UploadSession tracks an ongoing file upload
 type UploadSession struct {
 	ID                 primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	UserID             primitive.ObjectID `bson:"user_id" json:"user_id"`
 	OriginalFilename   string             `bson:"original_filename" json:"original_filename"`
 	TempFilePath       string             `bson:"temp_file_path" json:"temp_file_path"`
+	KeyFilePath        string             `bson:"key_file_path,omitempty" json:"key_file_path,omitempty"`
 	TotalSize          int64              `bson:"total_size" json:"total_size"`
 	UploadedSize       int64              `bson:"uploaded_size" json:"uploaded_size"`
 	Status             string             `bson:"status" json:"status"` // "uploading", "processing", "complete", "failed"
@@ -22,7 +23,7 @@ type UploadSession struct {
 	CompletedAt        *time.Time         `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 }
 
-// ChunkingStrategy defines how to split the file, currently just a blackbox, will treat it better later on.
+// ChunkingStrategy defines how to split the file
 type ChunkingStrategy string
 
 const (
@@ -36,13 +37,13 @@ const (
 type DriveSpaceInfo struct {
 	AccountID   primitive.ObjectID `json:"account_id"`
 	DisplayName string             `json:"display_name"`
-	OwnerName   string             `json:"owner_name,omitempty"`
-	OwnerEmail  string             `json:"owner_email,omitempty"`
-	TotalSpace  int64              `json:"total_space"` // bytes
-	UsedSpace   int64              `json:"used_space"`  // bytes
-	FreeSpace   int64              `json:"free_space"`  // bytes
-	Available   bool               `json:"available"`   // Can use this drive
+	TotalSpace  int64              `json:"total_space"`
+	UsedSpace   int64              `json:"used_space"`
+	FreeSpace   int64              `json:"free_space"`
+	Available   bool               `json:"available"`
 	Error       string             `json:"error,omitempty"`
+	OwnerName   string             `json:"owner_name,omitempty"`  // Add this
+	OwnerEmail  string             `json:"owner_email,omitempty"` // Add this
 }
 
 // ChunkPlan defines how a chunk should be distributed

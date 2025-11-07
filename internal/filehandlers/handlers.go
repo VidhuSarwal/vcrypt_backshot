@@ -396,8 +396,71 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 		return
 	}
 
+	// Store key file path in session for download
+	store.UpdateSessionKeyFile(ctx, sessionID, keyFilePath)
+
 	// Step 7: Complete (100%)
 	log.Printf("Processing complete for session %s. Key file: %s", sessionID.Hex(), keyFilePath)
 	fileprocessor.CompleteSession(ctx, sessionID)
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "complete", 100, "")
+}
+
+// DownloadKeyFileHandler - GET /api/files/download-key/:session_id
+func DownloadKeyFileHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("userID").(primitive.ObjectID)
+
+	// Extract session ID from path
+	sessionIDStr := r.URL.Path[len("/api/files/download-key/"):]
+	sessionID, err := primitive.ObjectIDFromHex(sessionIDStr)
+	if err != nil {
+		http.Error(w, "invalid session_id", http.StatusBadRequest)
+		return
+	}
+
+	// Get session
+	session, err := store.GetUploadSession(r.Context(), sessionID)
+	if err != nil || session == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify ownership
+	if session.UserID != userID {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if complete
+	if session.Status != "complete" {
+		http.Error(w, "processing not complete", http.StatusBadRequest)
+		return
+	}
+
+	// Get key file path from session
+	keyFilePath := session.KeyFilePath
+	if keyFilePath == "" {
+		// Fallback: construct from temp path
+		keyFilePath = filepath.Dir(session.TempFilePath) + "/" + session.OriginalFilename + ".2xpfm.key"
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(keyFilePath); os.IsNotExist(err) {
+		http.Error(w, "key file not found", http.StatusNotFound)
+		return
+	}
+
+	// Read key file
+	data, err := os.ReadFile(keyFilePath)
+	if err != nil {
+		http.Error(w, "failed to read key file", http.StatusInternalServerError)
+		return
+	}
+
+	// Set headers for download
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.2xpfm.key", session.OriginalFilename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+
+	// Send file
+	w.Write(data)
 }
