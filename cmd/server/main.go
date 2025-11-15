@@ -5,6 +5,7 @@ import (
 	"SE/internal/filehandlers"
 	"SE/internal/fileprocessor"
 	"SE/internal/handlers"
+	"SE/internal/middleware"
 	"SE/internal/oauth"
 	"SE/internal/store"
 	"context"
@@ -83,7 +84,9 @@ func main() {
 
 	addr := ":8080"
 	fmt.Printf("Starting server on %s\n", addr)
-	if err := http.ListenAndServe(addr, logRequest(mux)); err != nil {
+	// Apply middlewares: CORS (allow all for now) then Logger
+	handler := middleware.CORS([]string{"*"})(mux)
+	if err := http.ListenAndServe(addr, middleware.Logger(handler)); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -98,9 +101,4 @@ func requireMethod(verb string, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func logRequest(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s from %s\n", r.Method, r.URL.Path, r.RemoteAddr)
-		next.ServeHTTP(w, r)
-	})
-}
+ 
