@@ -1,7 +1,10 @@
+// Updated main.go - add these imports and routes
+
 package main
 
 import (
 	"SE/internal/auth"
+	"SE/internal/downloadhandlers" // NEW
 	"SE/internal/filehandlers"
 	"SE/internal/fileprocessor"
 	"SE/internal/handlers"
@@ -53,6 +56,9 @@ func main() {
 	// Initialize file processor config
 	fileprocessor.InitFileConfig()
 
+	// Initialize download handler config - NEW
+	downloadhandlers.InitDownloadConfig()
+
 	// Setup routes
 	mux := http.NewServeMux()
 
@@ -72,6 +78,22 @@ func main() {
 	mux.HandleFunc("/api/files/upload/status/", auth.AuthMiddleware(requireMethod("GET", filehandlers.GetUploadStatusHandler)))
 	mux.HandleFunc("/api/files/chunking/calculate", auth.AuthMiddleware(requireMethod("POST", filehandlers.CalculateChunkingHandler)))
 	mux.HandleFunc("/api/files/download-key/", auth.AuthMiddleware(requireMethod("GET", filehandlers.DownloadKeyFileHandler)))
+
+	// File listing and download routes - NEW
+	mux.HandleFunc("/api/files/list", auth.AuthMiddleware(requireMethod("GET", downloadhandlers.ListStoredFilesHandler)))
+	mux.HandleFunc("/api/files/download/initiate", auth.AuthMiddleware(requireMethod("POST", downloadhandlers.InitiateDownloadHandler)))
+	mux.HandleFunc("/api/files/download/status/", auth.AuthMiddleware(requireMethod("GET", downloadhandlers.GetDownloadStatusHandler)))
+	mux.HandleFunc("/api/files/download/file/", auth.AuthMiddleware(requireMethod("GET", downloadhandlers.DownloadFileHandler)))
+	mux.HandleFunc("/api/files/verify/", auth.AuthMiddleware(requireMethod("GET", downloadhandlers.VerifyFileIntegrityHandler)))
+
+	// DELETE uses a special handler to extract file_id from path
+	mux.HandleFunc("/api/files/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" {
+			auth.AuthMiddleware(downloadhandlers.DeleteFileHandler)(w, r)
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	// OAuth callback (no auth header; state validated via DB)
 	mux.HandleFunc("/oauth2/callback", requireMethod("GET", oauth.OauthCallbackHandler))
@@ -100,5 +122,3 @@ func requireMethod(verb string, h http.HandlerFunc) http.HandlerFunc {
 		h(w, r)
 	}
 }
-
- 

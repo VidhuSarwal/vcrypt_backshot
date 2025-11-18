@@ -64,6 +64,7 @@ func GetUserDriveSpaces(ctx context.Context, userID primitive.ObjectID) ([]model
 		spaceInfo.UsedSpace = space.Usage
 		spaceInfo.FreeSpace = space.Limit - space.Usage
 		spaceInfo.Available = true
+		spaceInfo.DriveID = account.DriveID // Add DriveID from account
 
 		spaces = append(spaces, spaceInfo)
 	}

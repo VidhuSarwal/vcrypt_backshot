@@ -38,6 +38,9 @@ func InitStore(ctx context.Context) error {
 	// Initialize sessions collection
 	initSessionsCollection(ctx)
 
+	// Initialize stored files and download sessions collections - NEW
+	initStoredFilesCollection(ctx)
+
 	// Create TTL index for oauth states
 	_, err = stateCol.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.M{"created_at": 1},

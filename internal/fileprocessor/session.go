@@ -169,3 +169,42 @@ func ScheduleCleanup(ctx context.Context, sessionID primitive.ObjectID) {
 func GetTempFilePath(sessionID primitive.ObjectID, filename string) string {
 	return filepath.Join(uploadTempDir, fmt.Sprintf("%s_%s", sessionID.Hex(), filename))
 }
+
+func CreateUploadSessionWithFileID(ctx context.Context, userID primitive.ObjectID, filename string, totalSize int64, fileID string) (*models.UploadSession, error) {
+	// Check file size limit
+	if totalSize > maxFileSizeBytes {
+		return nil, fmt.Errorf("file size %d exceeds maximum allowed %d bytes", totalSize, maxFileSizeBytes)
+	}
+
+	// Check concurrent uploads
+	activeSessions, err := store.CountActiveUserSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if activeSessions >= maxConcurrentPerUser {
+		return nil, fmt.Errorf("maximum concurrent uploads (%d) reached", maxConcurrentPerUser)
+	}
+
+	// Create temp file path
+	sessionID := primitive.NewObjectID()
+	tempPath := filepath.Join(uploadTempDir, fmt.Sprintf("%s_%s", sessionID.Hex(), filename))
+
+	session := &models.UploadSession{
+		ID:               sessionID,
+		UserID:           userID,
+		FileID:           fileID,
+		OriginalFilename: filename,
+		TempFilePath:     tempPath,
+		TotalSize:        totalSize,
+		UploadedSize:     0,
+		Status:           "uploading",
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(sessionExpiryDuration),
+	}
+
+	if err := store.CreateUploadSession(ctx, session); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}

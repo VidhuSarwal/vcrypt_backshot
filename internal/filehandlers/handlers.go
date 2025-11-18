@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -38,8 +39,11 @@ func InitiateUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create upload session
-	session, err := fileprocessor.CreateUploadSession(r.Context(), userID, req.Filename, req.FileSize)
+	// Generate unique file ID
+	fileID := fileprocessor.GenerateFileID()
+
+	// Create upload session with fileID
+	session, err := fileprocessor.CreateUploadSessionWithFileID(r.Context(), userID, req.Filename, req.FileSize, fileID)
 	if err != nil {
 		log.Printf("Failed to create upload session: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -57,6 +61,7 @@ func InitiateUploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"session_id":    session.ID.Hex(),
+		"file_id":       fileID,
 		"upload_url":    fmt.Sprintf("/api/files/upload/chunk?session_id=%s", session.ID.Hex()),
 		"drive_spaces":  driveSpaces,
 		"max_file_size": fileprocessor.GetMaxFileSize(),
@@ -126,16 +131,14 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Calculate progress based on highest offset reached
-	// offset is where chunk starts, written is how many bytes were written
 	highestByte := offset + written
 
 	// Only update if this chunk extends beyond current progress
-	// This handles out-of-order uploads correctly
 	if highestByte > session.UploadedSize {
 		if err := fileprocessor.UpdateSessionProgress(r.Context(), sessionID, highestByte); err != nil {
 			log.Printf("Failed to update session progress: %v", err)
 		}
-		session.UploadedSize = highestByte // Update local copy for response
+		session.UploadedSize = highestByte
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -212,7 +215,7 @@ func GetUploadStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get session - but DON'T validate ownership or expiry for status checks
+	// Get session
 	session, err := store.GetUploadSession(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, "failed to get session", http.StatusInternalServerError)
@@ -295,7 +298,6 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	sessionID := session.ID
 
 	defer func() {
-		// Schedule cleanup
 		fileprocessor.ScheduleCleanup(ctx, sessionID)
 	}()
 
@@ -349,7 +351,10 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 50, "Splitting file into chunks...")
 
 	chunkDir := filepath.Dir(obfuscatedPath)
-	chunkPaths, err := fileprocessor.SplitFile(obfuscatedPath, chunkDir, plan)
+
+	// Use fileID for chunk naming
+	fileID := session.FileID
+	chunkPaths, err := splitFileWithCustomNames(obfuscatedPath, chunkDir, plan, fileID)
 	if err != nil {
 		log.Printf("File splitting failed: %v", err)
 		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 50, fmt.Sprintf("File splitting failed: %v", err))
@@ -366,29 +371,138 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	log.Printf("Uploading chunks to drives for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 70, "Uploading chunks to drives...")
 
-	chunkMetadata, err := drivemanager.UploadChunksToDrivers(ctx, chunkPaths, plan, func(current, total int) {
-		progress := 70 + (20 * float64(current) / float64(total))
-		log.Printf("Upload progress for session %s: chunk %d/%d (%.1f%%)", sessionID.Hex(), current, total, progress)
-		fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", progress, fmt.Sprintf("Uploading chunk %d/%d...", current, total))
-	})
-	if err != nil {
-		log.Printf("Upload failed: %v", err)
-		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 70, fmt.Sprintf("Upload failed: %v", err))
-		return
+	// Build metadata for stored file
+	storedChunks := make([]models.StoredChunk, 0, len(plan))
+
+	for i, chunkPath := range chunkPaths {
+		chunk := plan[i]
+		progress := 70 + (20 * float64(i) / float64(len(chunkPaths)))
+		log.Printf("Upload progress for session %s: chunk %d/%d (%.1f%%)", sessionID.Hex(), i+1, len(chunkPaths), progress)
+		fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", progress, fmt.Sprintf("Uploading chunk %d/%d...", i+1, len(chunkPaths)))
+
+		// Upload chunk
+		filename := fmt.Sprintf("%s_%02d.2xpfm", fileID, chunk.ChunkID)
+		driveFileID, err := drivemanager.UploadChunkToDrive(ctx, chunk.DriveAccountID, chunkPath, filename)
+		if err != nil {
+			log.Printf("Upload failed: %v", err)
+			// Cleanup already uploaded chunks
+			for j := 0; j < i; j++ {
+				drivemanager.DeleteDriveFile(ctx, storedChunks[j].DriveAccountID, storedChunks[j].DriveFileID)
+			}
+			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, fmt.Sprintf("Upload failed: %v", err))
+			return
+		}
+
+		// Calculate checksum
+		checksum, err := fileprocessor.CalculateChecksum(chunkPath)
+		if err != nil {
+			log.Printf("Checksum calculation failed: %v", err)
+			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, "Checksum calculation failed")
+			return
+		}
+
+		// Get drive ID for this account
+		account, err := store.GetDriveAccountByID(ctx, chunk.DriveAccountID)
+		if err != nil {
+			log.Printf("Failed to get account: %v", err)
+			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, "Failed to get drive account")
+			return
+		}
+
+		storedChunk := models.StoredChunk{
+			ChunkID:        chunk.ChunkID,
+			DriveAccountID: chunk.DriveAccountID,
+			DriveID:        account.DriveID,
+			DriveFileID:    driveFileID,
+			Filename:       filename,
+			Size:           chunk.Size,
+			Checksum:       checksum,
+			StartOffset:    chunk.StartOffset,
+			EndOffset:      chunk.EndOffset,
+		}
+		storedChunks = append(storedChunks, storedChunk)
+
+		// Update manifest on drive with retry
+		_, mfid, err := drivemanager.GetOrCreateManifest(ctx, chunk.DriveAccountID)
+		if err != nil {
+			log.Printf("Failed to get manifest: %v", err)
+			fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", progress, "Failed to update manifest")
+			return
+		}
+
+		manifestFile := models.ManifestFile{
+			FileID:           fileID,
+			OriginalFilename: session.OriginalFilename,
+			UploadedAt:       time.Now(),
+			Chunks: []models.ManifestChunk{
+				{
+					ChunkID:     chunk.ChunkID,
+					Filename:    filename,
+					DriveFileID: driveFileID,
+					Size:        chunk.Size,
+					Checksum:    checksum,
+				},
+			},
+		}
+
+		if err := drivemanager.AddFileToManifest(ctx, chunk.DriveAccountID, mfid, manifestFile); err != nil {
+			log.Printf("Failed to update manifest: %v", err)
+			// Don't fail the entire upload, but log the error
+		}
 	}
 	log.Printf("All chunks uploaded for session %s", sessionID.Hex())
 
-	// Step 6: Generate key file (95%)
+	// Step 6: Save stored file record (93%)
+	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 93, "Saving file metadata...")
+
+	storedFile := &models.StoredFile{
+		FileID:           fileID,
+		UserID:           userID,
+		OriginalFilename: session.OriginalFilename,
+		OriginalSize:     session.TotalSize,
+		ProcessedSize:    processedSize,
+		Chunks:           storedChunks,
+		ObfuscationSeed:  obfMetadata.Seed,
+		Status:           "active",
+	}
+
+	if err := store.CreateStoredFile(ctx, storedFile); err != nil {
+		log.Printf("Failed to save stored file: %v", err)
+		fileprocessor.UpdateSessionStatus(ctx, sessionID, "failed", 93, "Failed to save file metadata")
+		return
+	}
+
+	// Step 7: Generate key file (95%)
 	log.Printf("Generating key file for session %s", sessionID.Hex())
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "processing", 95, "Generating key file...")
 
-	keyFilePath := filepath.Join(chunkDir, session.OriginalFilename+".2xpfm.key")
-	if err := fileprocessor.GenerateKeyFile(
+	// Build chunk metadata for key file
+	keyChunks := make([]models.ChunkMetadata, len(storedChunks))
+	for i, sc := range storedChunks {
+		keyChunks[i] = models.ChunkMetadata{
+			ChunkID:        sc.ChunkID,
+			DriveAccountID: sc.DriveAccountID.Hex(),
+			DriveID:        sc.DriveID,
+			DriveFileID:    sc.DriveFileID,
+			Filename:       sc.Filename,
+			StartOffset:    sc.StartOffset,
+			EndOffset:      sc.EndOffset,
+			Size:           sc.Size,
+			Checksum:       sc.Checksum,
+		}
+	}
+
+	// Key file naming: originalname_fileID.2xpfm.key
+	keyFilename := fmt.Sprintf("%s_%s.2xpfm.key", session.OriginalFilename, fileID)
+	keyFilePath := filepath.Join(chunkDir, keyFilename)
+
+	if err := generateKeyFileWithFileID(
 		session.OriginalFilename,
+		fileID,
 		session.TotalSize,
 		processedSize,
 		obfMetadata,
-		chunkMetadata,
+		keyChunks,
 		keyFilePath,
 	); err != nil {
 		log.Printf("Key file generation failed: %v", err)
@@ -399,10 +513,97 @@ func processAndUploadFile(ctx context.Context, session *models.UploadSession, st
 	// Store key file path in session for download
 	store.UpdateSessionKeyFile(ctx, sessionID, keyFilePath)
 
-	// Step 7: Complete (100%)
+	// Step 8: Complete (100%)
 	log.Printf("Processing complete for session %s. Key file: %s", sessionID.Hex(), keyFilePath)
 	fileprocessor.CompleteSession(ctx, sessionID)
 	fileprocessor.UpdateSessionStatus(ctx, sessionID, "complete", 100, "")
+}
+
+// splitFileWithCustomNames splits file with fileID naming
+func splitFileWithCustomNames(inputPath string, outputDir string, plan []models.ChunkPlan, fileID string) ([]string, error) {
+	inFile, err := os.Open(inputPath)
+	if err != nil {
+		return nil, err
+	}
+	defer inFile.Close()
+
+	chunkPaths := make([]string, 0, len(plan))
+
+	for _, chunk := range plan {
+		chunkFilename := fmt.Sprintf("%s_%02d.2xpfm", fileID, chunk.ChunkID)
+		chunkPath := filepath.Join(outputDir, chunkFilename)
+
+		chunkFile, err := os.Create(chunkPath)
+		if err != nil {
+			for _, path := range chunkPaths {
+				os.Remove(path)
+			}
+			return nil, err
+		}
+
+		_, err = inFile.Seek(chunk.StartOffset, 0)
+		if err != nil {
+			chunkFile.Close()
+			for _, path := range chunkPaths {
+				os.Remove(path)
+			}
+			return nil, err
+		}
+
+		written, err := io.CopyN(chunkFile, inFile, chunk.Size)
+		chunkFile.Close()
+
+		if err != nil {
+			for _, path := range chunkPaths {
+				os.Remove(path)
+			}
+			return nil, err
+		}
+
+		if written != chunk.Size {
+			for _, path := range chunkPaths {
+				os.Remove(path)
+			}
+			return nil, fmt.Errorf("chunk %d: expected %d bytes, wrote %d bytes", chunk.ChunkID, chunk.Size, written)
+		}
+
+		chunkPaths = append(chunkPaths, chunkPath)
+	}
+
+	return chunkPaths, nil
+}
+
+// generateKeyFileWithFileID generates key file with fileID
+func generateKeyFileWithFileID(
+	originalFilename string,
+	fileID string,
+	originalSize int64,
+	processedSize int64,
+	obfuscation *models.ObfuscationMetadata,
+	chunks []models.ChunkMetadata,
+	outputPath string,
+) error {
+	keyFile := models.KeyFile{
+		Version:          "1.0",
+		FileID:           fileID,
+		OriginalFilename: originalFilename,
+		OriginalSize:     originalSize,
+		ProcessedSize:    processedSize,
+		Obfuscation:      *obfuscation,
+		Chunks:           chunks,
+		CreatedAt:        time.Now(),
+	}
+
+	data, err := json.MarshalIndent(keyFile, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal key file: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write key file: %w", err)
+	}
+
+	return nil
 }
 
 // DownloadKeyFileHandler - GET /api/files/download-key/:session_id
@@ -439,8 +640,8 @@ func DownloadKeyFileHandler(w http.ResponseWriter, r *http.Request) {
 	// Get key file path from session
 	keyFilePath := session.KeyFilePath
 	if keyFilePath == "" {
-		// Fallback: construct from temp path
-		keyFilePath = filepath.Dir(session.TempFilePath) + "/" + session.OriginalFilename + ".2xpfm.key"
+		// Fallback: construct from temp path and fileID
+		keyFilePath = filepath.Dir(session.TempFilePath) + "/" + fmt.Sprintf("%s_%s.2xpfm.key", session.OriginalFilename, session.FileID)
 	}
 
 	// Check if file exists
@@ -458,7 +659,7 @@ func DownloadKeyFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Set headers for download
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.2xpfm.key", session.OriginalFilename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s_%s.2xpfm.key", session.OriginalFilename, session.FileID))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 
 	// Send file

@@ -162,6 +162,7 @@ func OauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		Provider:       "google",
 		DisplayName:    "Google Drive",
 		EncryptedToken: enc,
+		// DriveID will be set when manifest is retrieved/created during first upload
 	}
 
 	if err := store.AddDriveAccountToUser(r.Context(), stored.UserID, acct); err != nil {

@@ -10,12 +10,13 @@ import (
 type UploadSession struct {
 	ID                 primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	UserID             primitive.ObjectID `bson:"user_id" json:"user_id"`
+	FileID             string             `bson:"file_id,omitempty" json:"file_id,omitempty"` // Add this
 	OriginalFilename   string             `bson:"original_filename" json:"original_filename"`
 	TempFilePath       string             `bson:"temp_file_path" json:"temp_file_path"`
 	KeyFilePath        string             `bson:"key_file_path,omitempty" json:"key_file_path,omitempty"`
 	TotalSize          int64              `bson:"total_size" json:"total_size"`
 	UploadedSize       int64              `bson:"uploaded_size" json:"uploaded_size"`
-	Status             string             `bson:"status" json:"status"` // "uploading", "processing", "complete", "failed"
+	Status             string             `bson:"status" json:"status"`
 	ProcessingProgress float64            `bson:"processing_progress" json:"processing_progress"`
 	ErrorMessage       string             `bson:"error_message,omitempty" json:"error_message,omitempty"`
 	CreatedAt          time.Time          `bson:"created_at" json:"created_at"`
@@ -42,8 +43,9 @@ type DriveSpaceInfo struct {
 	FreeSpace   int64              `json:"free_space"`
 	Available   bool               `json:"available"`
 	Error       string             `json:"error,omitempty"`
-	OwnerName   string             `json:"owner_name,omitempty"`  // Add this
-	OwnerEmail  string             `json:"owner_email,omitempty"` // Add this
+	OwnerName   string             `json:"owner_name,omitempty"`                         // Add this
+	OwnerEmail  string             `json:"owner_email,omitempty"`                        // Add this
+	DriveID     string             `bson:"drive_id,omitempty" json:"drive_id,omitempty"` // unique drive identifier
 }
 
 // ChunkPlan defines how a chunk should be distributed
@@ -68,6 +70,7 @@ type ObfuscationMetadata struct {
 type ChunkMetadata struct {
 	ChunkID        int    `json:"chunk_id"`
 	DriveAccountID string `json:"drive_account_id"`
+	DriveID        string `json:"drive_id"`
 	DriveFileID    string `json:"drive_file_id"`
 	Filename       string `json:"filename"`
 	StartOffset    int64  `json:"start_offset"`
@@ -79,6 +82,7 @@ type ChunkMetadata struct {
 // KeyFile structure - what user downloads
 type KeyFile struct {
 	Version          string              `json:"version"`
+	FileID           string              `json:"file_id"`
 	OriginalFilename string              `json:"original_filename"`
 	OriginalSize     int64               `json:"original_size"`
 	ProcessedSize    int64               `json:"processed_size"`

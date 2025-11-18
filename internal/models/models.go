@@ -11,7 +11,8 @@ type DriveAccount struct {
 	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Provider       string             `bson:"provider" json:"provider"` // "google"
 	DisplayName    string             `bson:"display_name,omitempty" json:"display_name"`
-	EncryptedToken []byte             `bson:"encrypted_token" json:"-"` // store encrypted oauth2 token JSON
+	EncryptedToken []byte             `bson:"encrypted_token" json:"-"`                     // store encrypted oauth2 token JSON
+	DriveID        string             `bson:"drive_id,omitempty" json:"drive_id,omitempty"` // NEW - unique drive identifier
 	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
 }
 
