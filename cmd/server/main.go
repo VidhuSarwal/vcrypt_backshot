@@ -3,16 +3,16 @@
 package main
 
 import (
-	"SE/internal/auth"
-	"SE/internal/downloadhandlers" // NEW
-	"SE/internal/filehandlers"
-	"SE/internal/fileprocessor"
-	"SE/internal/handlers"
-	"SE/internal/middleware"
-	"SE/internal/oauth"
-	"SE/internal/store"
 	"context"
 	"fmt"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/auth"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/downloadhandlers" // NEW
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/filehandlers"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/fileprocessor"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/handlers"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/middleware"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/oauth"
+	"github.com/VidhuSarwal/vcrypt_backshot.git/internal/store"
 	"log"
 	"net/http"
 	"os"
